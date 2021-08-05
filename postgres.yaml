@@ -1,0 +1,452 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Create Auraro PostgreSQL database instance'
+# this template created a DB cluster with one writer instance and one reader instance.
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Aurora PostgreSQL Information"
+        Parameters:
+          - pDBInstance
+          - pDatabaseName
+          - pDBPwd
+          - pDBParamFamily
+          - pDBVersion
+          - pDBClass
+          - pDataClassification
+          - pNotify
+
+      - Label:
+          default: "Network Information from parameter store (do not change)"
+        Parameters:
+          - pVPCID
+          - pPrivateSubnet1ID
+          - pPrivateSubnet1CIDR
+          - pPrivateSubnet2ID
+          - pPrivateSubnet2CIDR
+
+      - Label:
+          default: "Application Information from parameter store (do not change)"
+        Parameters:
+          - pAppName
+          - pAppID
+          - pEnv
+          - pOrg
+          - pOwner
+          - pProjectName
+
+Parameters:
+  pDBInstance:
+    Description: Mandatory Database Instance Name in lower case
+    Type: String
+    MinLength: 1
+    AllowedPattern: "[a-z][a-z0-9\\-]*"
+  pDatabaseName:
+    Description: Optional Database/Schema Name
+    Type: String
+  pDBPwd:
+    Description: Master password (min 15 chars, can include -_+!?*#%.)
+    Type: String
+    MinLength: 15
+    NoEcho: true
+    AllowedPattern: "[a-zA-Z0-9\\-\\_\\+\\!\\?\\*\\#\\%\\.]*"
+  pDBParamFamily:
+    Description: Database parameter group family, depends on the DBVersion
+    Type: String
+    Default: aurora-postgresql10
+  pDBVersion:
+    Description: Database engine version
+    Type: String
+    Default: 10.7
+  pDBClass:
+    Description: Database instance class (number of vCPU and RAM)
+    Type: String
+    Default: '2vCPU-16GB'
+    AllowedValues:
+      - '2vCPU-16GB'
+      - '4vCPU-32GB'
+      - '8vCPU-64GB'
+      - '16vCPU-128GB'
+      - '48vCPU-384GB'
+  pDataClassification:
+    Description: Data Classification
+    Type: String
+    AllowedValues:
+      - RESTRICTED
+      - CONFIDENTIAL
+      - INTERNAL
+    Default: INTERNAL
+  pNotify:
+    Type: String
+    Description: (Mandatory) Email address for notification
+    MinLength: 1
+
+  pVPCID:
+    Description: 'Parameter store name /vpc/id'
+    Type: AWS::EC2::VPC::Id
+    
+
+  pPrivateSubnet1ID:
+    Description: 'Parameter store name /vpc/privatesubnet1/id'
+    Type: AWS::EC2::Subnet::Id 
+
+  pPrivateSubnet2ID:
+    Description: 'Parameter store name /vpc/privatesubnet2/id'
+    Type: AWS::EC2::Subnet::Id
+
+
+  pAppID:
+    Type: String
+  pAppName:
+    Type: String
+  pEnv:
+    Type: String
+  pOrg:
+    Type: String
+  pOwner:
+    Type: String
+  pProjectName:
+    Type: String
+
+Mappings:
+  DBClassMap:
+    2vCPU-16GB:
+      mDBClass: db.r5.large
+    4vCPU-32GB:
+      mDBClass: db.r5.xlarge
+    8vCPU-64GB:
+      mDBClass: db.r5.2xlarge
+    16vCPU-128GB:
+      mDBClass: db.r5.4xlarge
+    48vCPU-384GB:
+      mDBClass: db.r5.12xlarge
+
+Conditions:
+  DatabaseNameDefined: !Not [!Equals [ !Ref pDatabaseName, "" ]]
+
+Resources:
+#Create RDS Subnet Group
+  rRDSSubnetGroup:
+    Type: "AWS::RDS::DBSubnetGroup"
+    Properties:
+      DBSubnetGroupDescription: "DBSubnet group created for RDS"
+      DBSubnetGroupName: !Sub db-subnetgroup-${pDBInstance} 
+      SubnetIds:
+        - !Ref pPrivateSubnet1ID
+        - !Ref pPrivateSubnet2ID
+      Tags:
+        - Key: Name
+          Value: !Sub DBSubnetGroup-${pDBInstance} 
+        - Key: AppID
+          Value: !Ref pAppID
+        - Key: AppName
+          Value: !Ref pAppName
+        - Key: Environment
+          Value: !Ref pEnv
+        - Key: Notify
+          Value: !Ref pNotify
+        - Key: Org
+          Value: !Ref pOrg
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: ProjectName
+          Value: !Ref pProjectName
+        - Key: Role
+          Value: database subnet group 
+
+# Create RDS Security Group
+  rRDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group for RDS
+      GroupName: !Sub rds-securitygroup-${pDBInstance} 
+      VpcId: !Ref pVPCID
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 5432
+        ToPort: 5432
+      - IpProtocol: tcp
+        FromPort: 5432
+        ToPort: 5432
+      Tags:
+        - Key: AppID
+          Value: !Ref pAppID
+        - Key: AppName
+          Value: !Ref pAppName
+        - Key: Environment
+          Value: !Ref pEnv
+        - Key: Notify
+          Value: !Ref pNotify
+        - Key: Org
+          Value: !Ref pOrg
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: ProjectName
+          Value: !Ref pProjectName
+
+  ClusterParamAuroraPostgres:
+    Type: AWS::RDS::DBClusterParameterGroup
+    Properties:
+      Family: aurora-postgresql10
+      Description: !Sub Parameter group for DB cluster ${pDBInstance}-cluster
+      Parameters:
+        autovacuum: "1"
+      Tags:
+        - Key: AppID
+          Value: !Ref pAppID
+        - Key: Environment
+          Value: !Ref pEnv
+        - Key: Notify
+          Value: !Ref pNotify
+        - Key: Org
+          Value: !Ref pOrg
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: ProjectName
+          Value: !Ref pProjectName
+        - Key: Role
+          Value: database parameter group
+
+  DBParamAuroraPostgres:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      Family: aurora-postgresql10
+      Description: !Sub Parameter group for DB instance ${pDBInstance}
+      Parameters:
+        log_connections: "1"
+        log_min_duration_statement: "0"
+        log_statement: "all"
+        pgaudit.log: "all"
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-dbparamaurorapostgres
+        - Key: AppID
+          Value: !Ref pAppID
+        - Key: Environment
+          Value: !Ref pEnv
+        - Key: Notify
+          Value: !Ref pNotify
+        - Key: Org
+          Value: !Ref pOrg
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: ProjectName
+          Value: !Ref pProjectName
+        - Key: Role
+          Value: database parameter group
+
+  rRDSCreateSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: 'Secret for RDS user'
+      Name: !Sub rds/${pDBInstance}/superadmin
+      SecretString: !Sub '{"username":"superadmin","password":"${pDBPwd}"}'
+      Tags:
+        - Key: Name
+          Value: !Sub rds/${pDBInstance}/superadmin
+        - Key: AppID
+          Value: !Ref pAppID
+        - Key: AppName
+          Value: !Ref pAppName
+        - Key: Environment
+          Value: !Ref pEnv
+        - Key: Notify
+          Value: !Ref pNotify
+        - Key: Org
+          Value: !Ref pOrg
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: ProjectName
+          Value: !Ref pProjectName
+        - Key: Role
+          Value: secrets manager
+
+  rSecretRDSInstanceAttachment:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    DependsOn: [ rRDSCreateSecret, rPrimaryDB ]
+    Properties:
+      SecretId: !Ref rRDSCreateSecret
+      TargetId: !Ref rDBCluster
+      TargetType: AWS::RDS::DBCluster
+
+  rDBCluster:
+    Type: AWS::RDS::DBCluster
+    DependsOn: [ ClusterParamAuroraPostgres,rRDSSubnetGroup,rRDSSecurityGroup ]
+    Properties:
+      BackupRetentionPeriod: 15
+      DatabaseName: !Ref pDatabaseName
+      DBClusterParameterGroupName: !Ref ClusterParamAuroraPostgres
+      DBClusterIdentifier: !Sub ${pDBInstance}-cluster
+      DBSubnetGroupName: !Ref rRDSSubnetGroup
+      EnableIAMDatabaseAuthentication: true
+      EnableCloudwatchLogsExports: [ 'postgresql' ]
+      Engine: aurora-postgresql
+      EngineVersion: !Ref pDBVersion
+      EngineMode: provisioned
+      Port: 5432
+      MasterUsername: superadmin
+      MasterUserPassword: !Ref pDBPwd
+      PreferredBackupWindow: 01:00-02:00
+      PreferredMaintenanceWindow: sun:03:00-sun:04:00
+      StorageEncrypted: true
+      VpcSecurityGroupIds: [ !Ref rRDSSecurityGroup ] 
+      Tags:
+        - Key: Name
+          Value: !Sub ${pDBInstance}-cluster
+        - Key: AppID
+          Value: !Ref pAppID
+        - Key: Environment
+          Value: !Ref pEnv
+        - Key: Notify
+          Value: !Ref pNotify
+        - Key: Org
+          Value: !Ref pOrg
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: ProjectName
+          Value: !Ref pProjectName
+        - Key: Role
+          Value: database cluster
+        - Key: DataClassification
+          Value: !Ref pDataClassification
+
+  rPrimaryDB:
+    Type: AWS::RDS::DBInstance
+    DependsOn: rDBCluster
+    Properties:
+      DBClusterIdentifier: !Ref rDBCluster
+      DBInstanceIdentifier: !Ref pDBInstance
+      DBInstanceClass: !FindInMap [DBClassMap, !Ref pDBClass, mDBClass]
+      Engine: aurora-postgresql
+      EngineVersion: !Ref pDBVersion
+      PubliclyAccessible: false
+      AutoMinorVersionUpgrade: false
+      DBSubnetGroupName: !Ref rRDSSubnetGroup 
+      DBParameterGroupName: !Ref DBParamAuroraPostgres
+      Tags:
+        - Key: Name
+          Value: !Ref pDBInstance
+        - Key: AppID
+          Value: !Ref pAppID
+        - Key: Environment
+          Value: !Ref pEnv
+        - Key: Notify
+          Value: !Ref pNotify
+        - Key: Org
+          Value: !Ref pOrg
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: ProjectName
+          Value: !Ref pProjectName
+        - Key: Role
+          Value: database instance
+        - Key: DataClassification
+          Value: !Ref pDataClassification
+
+  rReplicaDB:
+    Type: AWS::RDS::DBInstance
+    DependsOn: rPrimaryDB
+    Properties:
+      DBClusterIdentifier: !Ref rDBCluster
+      DBInstanceIdentifier: !Sub ${pDBInstance}-replica1
+      DBInstanceClass: !FindInMap [DBClassMap, !Ref pDBClass, mDBClass]
+      Engine: aurora-postgresql
+      EngineVersion: !Ref pDBVersion
+      PubliclyAccessible: false
+      AutoMinorVersionUpgrade: false
+      DBSubnetGroupName: !Ref rRDSSubnetGroup 
+      DBParameterGroupName: !Ref DBParamAuroraPostgres
+      Tags:
+        - Key: Name
+          Value: !Sub ${pDBInstance}-replica1
+        - Key: AppID
+          Value: !Ref pAppID
+        - Key: Environment
+          Value: !Ref pEnv
+        - Key: Notify
+          Value: !Ref pNotify
+        - Key: Org
+          Value: !Ref pOrg
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: ProjectName
+          Value: !Ref pProjectName
+        - Key: Role
+          Value: database instance
+        - Key: DataClassification
+          Value: !Ref pDataClassification
+
+  rParamStoreDBSubnetGroup:
+    Type: AWS::SSM::Parameter
+    DependsOn: rRDSSubnetGroup
+    Properties:
+      Description: DB subnet group
+      Name: !Sub '/rds/subnetgroup/${rDBCluster}'
+      Type: String
+      Value: !Ref rRDSSubnetGroup
+
+  rParamStoreDBSecurityGroup:
+    Type: AWS::SSM::Parameter
+    DependsOn: rRDSSecurityGroup
+    Properties:
+      Description: DB security group
+      Name: !Sub '/rds/securitygroup/${rDBCluster}'
+      Type: String
+      Value: !Ref rRDSSecurityGroup
+
+  rParamStoreClusterParamAuroraPostgres:
+    Type: AWS::SSM::Parameter
+    DependsOn: ClusterParamAuroraPostgres
+    Properties:
+      Description: DB cluster endpoint
+      Name: !Sub '/rds/parametergroup/cluster/${rDBCluster}'
+      Type: String
+      Value: !Ref ClusterParamAuroraPostgres
+
+  rParamStoreDBParamAuroraPostgres:
+    Type: AWS::SSM::Parameter
+    DependsOn: DBParamAuroraPostgres 
+    Properties:
+      Description: RDS instance parameter group 
+      Name: !Sub '/rds/parametergroup/instance/${rDBCluster}'
+      Type: String
+      Value: !Ref DBParamAuroraPostgres 
+
+  rParamStoreDBClusterEndpoint: 
+    Type: AWS::SSM::Parameter
+    DependsOn: rDBCluster
+    Properties:
+      Description: DB cluster endpoint
+      Name: !Sub '/rds/endpoint/primary/${rDBCluster}'
+      Type: String
+      Value: !GetAtt rDBCluster.Endpoint.Address
+
+  rParamStoreDBClusterReadEndpoint:
+    Type: AWS::SSM::Parameter
+    DependsOn: rDBCluster
+    Properties:
+      Description: DB cluster readonly endpoint
+      Name: !Sub '/rds/endpoint/replica/${rDBCluster}'
+      Type: String
+      Value: !GetAtt rDBCluster.ReadEndpoint.Address
+
+  rParamStoreDBClusterARn: 
+    Type: AWS::SSM::Parameter
+    DependsOn: rDBCluster
+    Properties:
+      Description: DB cluster ARN
+      Name: !Sub '/rds/arn/${rDBCluster}'
+      Type: String
+      Value: !Join
+        - ''
+        - - 'arn:aws:rds:us-west-2:'
+          - !Ref 'AWS::AccountId'
+          - !Sub ':cluster:${rDBCluster}'
+
+Outputs:
+    DatabaseClusterName: 
+        Description: Database cluster name
+        Value: !Ref rDBCluster
+    DatabaseClusterEndpoint: 
+        Description: Endpoint of database cluster
+        Value: !GetAtt rDBCluster.Endpoint.Address
