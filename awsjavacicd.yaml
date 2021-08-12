@@ -1,0 +1,586 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+
+Metadata: 
+  AWS::CloudFormation::Interface: 
+    ParameterGroups: 
+      - 
+        Label:
+          default: "GitHub Configuration"
+        Parameters:
+          - pGitHubAccount
+          - pGitHubRepo
+          - pGitHubRepoBranch
+          - pGitHubToken
+      -
+        Label:
+          default: "Pipeline Configuration"
+        Parameters:
+          - pPipelineBucketName
+       
+      -
+        Label:
+          default: "Tags"
+        Parameters:
+          - pApplicationName
+          - pEnv
+          - pCFNOwnerTag
+    
+    ParameterLabels:
+      pGitHubAccount:
+        default: "GitHub Account"
+      pGitHubRepo:
+        default: "Source Repository"
+      pGitHubRepoBranch:
+        default: "Repo Branch"
+      pGitHubToken:
+        default: "GitHub Access Token"
+      pPipelineBucketName:
+        default: "S3 Artifact Bucket Name"
+      pApplicationName:
+        default: "Application Name"
+      pEnv:
+        default: "Environment"
+      pCFNOwnerTag:
+        default: "CorpID of Owner"
+
+
+
+# Paramaters that the user will be prompted for when running this template
+# Note that the values from these parameters will be used and referenced
+#  by the resources below
+
+Parameters:
+  # GitHub Personal Access Token for accessing the target repository
+  pGitHubToken:
+    Type: 'String'
+    Description: "Enter the GitHub Access Token"
+    NoEcho: true
+
+  # GitHub account or organization that owns the target repository
+  pGitHubAccount:
+    Type: 'String'
+    Description: "Enter the GitHub Account Name"
+
+  # Specific GitHub target repository  - do not include .git extension
+  pGitHubRepo:
+    Type: 'String'
+    Description: "Enter the GitHub Repo Name"
+
+  # Specify the branch (master, dev, feature, etc) within repo
+  pGitHubRepoBranch:
+    Type: 'String'
+    Description: "Enter the Branch (dev, master, feature, etc) you wish to pull from the GitHub repo"
+       
+
+  # Specify S3 bucket to contain pipeline / build artifacts 
+  pPipelineBucketName:
+    Type: 'String'
+    Description: "The name of the S3 bucket that will contain the pipeline artifacts"
+
+  # CorpID of the person who 'owns' the stack and associated resources
+  pCFNOwnerTag:
+    Type: 'String'
+    Description: "Enter CorpID of the owner of this stack (for tagging of resources)"
+
+  # Environment specification (appended to tags, etc)
+  pEnv:
+    Type: 'String'
+    Description: "The environment"
+    AllowedValues:
+      - 'PROD'
+      - 'QA'
+      - 'TEST'
+      - 'DEV'
+
+  # Application Name (used in stack / resource names, tags)
+  pApplicationName:
+    Type: 'String'
+    Description: "The name of the application"
+    
+  VPC:
+    Type: AWS::EC2::VPC::Id
+  SubnetA:
+    Type: AWS::EC2::Subnet::Id
+  SubnetB:
+    Type: AWS::EC2::Subnet::Id
+  Image:
+    Type: String
+    # Update with the Docker image. "You can use images in the Docker Hub registry or specify other repositories (repository-url/image:tag)."
+  ServiceName:
+    Type: String
+    Default: ecs-java
+    # update with the name of the service
+  ContainerPort:
+    Type: Number
+  LoadBalancerPort:
+    Type: Number
+    Default: 80
+  MinContainers:
+    Type: Number
+    Default: 1
+  # for autoscaling
+  MaxContainers:
+    Type: Number
+    Default: 2
+  Cpu:
+   Type: Number
+  Memory:
+   Type: String
+  # target CPU utilization (%)  
+  Repository:
+    Type: String
+    Default: awsjava
+  SecurityGroup:
+    Description: Select the Security Group to apply to the Application Load Balancer
+    Type: AWS::EC2::SecurityGroup::Id   
+  Subnets:
+    Description: Choose which subnets the Application Load Balancer should be deployed to
+    Type: List<AWS::EC2::Subnet::Id> 
+  Loadbalancer:
+    Type: String  
+
+ 
+
+Resources:
+ 
+  Ecr:
+   Type: AWS::ECR::Repository
+   Properties: 
+     RepositoryName: !Ref Repository   
+      
+# AWS IAM Role to be used with the AWS CodePipeline defined below
+# Allows CodePipeline to assume the role, perform appropriate actions
+# (logging, CodeBuild, S3, etc) on associated resources
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Join ['', [!Ref ServiceName, Cluster]]
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    # Makes sure the log group is created before it is used.
+    DependsOn: LogGroup
+    Properties:
+      # Name of the task definition. Subsequent versions of the task definition are grouped together under this name.
+      Family: !Join ['', [!Ref ServiceName, TaskDefinition]]
+      # awsvpc is required for Fargate
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      # 256 (.25 vCPU) - Available memory values: 0.5GB, 1GB, 2GB
+      # 512 (.5 vCPU) - Available memory values: 1GB, 2GB, 3GB, 4GB
+      # 1024 (1 vCPU) - Available memory values: 2GB, 3GB, 4GB, 5GB, 6GB, 7GB, 8GB
+      # 2048 (2 vCPU) - Available memory values: Between 4GB and 16GB in 1GB increments
+      # 4096 (4 vCPU) - Available memory values: Between 8GB and 30GB in 1GB increments
+      Cpu: !Ref Cpu
+      # 0.5GB, 1GB, 2GB - Available cpu values: 256 (.25 vCPU)
+      # 1GB, 2GB, 3GB, 4GB - Available cpu values: 512 (.5 vCPU)
+      # 2GB, 3GB, 4GB, 5GB, 6GB, 7GB, 8GB - Available cpu values: 1024 (1 vCPU)
+      # Between 4GB and 16GB in 1GB increments - Available cpu values: 2048 (2 vCPU)
+      # Between 8GB and 30GB in 1GB increments - Available cpu values: 4096 (4 vCPU)
+      Memory: !Ref Memory
+      # A role needed by ECS.
+      # "The ARN of the task execution role that containers in this task can assume. All containers in this task are granted the permissions that are specified in this role."
+      # "There is an optional task execution IAM role that you can specify with Fargate to allow your Fargate tasks to make API calls to Amazon ECR."
+      ExecutionRoleArn: !Ref ExecutionRole
+      # "The Amazon Resource Name (ARN) of an AWS Identity and Access Management (IAM) role that grants containers in the task permission to call AWS APIs on your behalf."
+      TaskRoleArn: !Ref TaskRole
+      ContainerDefinitions:
+        - Name: !Ref ServiceName
+          Image: !Ref Image
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+          # Send logs to CloudWatch Logs
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-region: !Ref AWS::Region
+              awslogs-group: !Ref LogGroup
+              awslogs-stream-prefix: ecs
+  # A role needed by ECS
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Join ['', [!Ref ServiceName, ExecutionRole]]
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'
+  # A role for the containers
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Join ['', [!Ref ServiceName, TaskRole]]
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
+      # ManagedPolicyArns:
+      #   -
+      # Policies:
+      #   -
+  # A role needed for auto scaling
+  AutoScalingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Join ['', [!Ref ServiceName, AutoScalingRole]]
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceAutoscaleRole'
+  ContainerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Join ['', [!Ref ServiceName, ContainerSecurityGroup]]
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref ContainerPort
+          ToPort: !Ref ContainerPort
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Join ['', [!Ref ServiceName, LoadBalancerSecurityGroup]]
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref LoadBalancerPort
+          ToPort: !Ref LoadBalancerPort
+          CidrIp: 0.0.0.0/0
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - ListenerHTTP
+    # This dependency is needed so that the load balancer is setup correctly in time
+    Properties: 
+      ServiceName: !Ref ServiceName
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref TaskDefinition
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 40
+        MaximumPercent: 100
+      DesiredCount: 1
+      # This may need to be adjusted if the container takes a while to start up
+      LaunchType: FARGATE
+      NetworkConfiguration: 
+        AwsvpcConfiguration:
+          # change to DISABLED if you're using private subnets that have access to a NAT gateway
+          AssignPublicIp: ENABLED
+          Subnets:
+            - !Ref SubnetA
+            - !Ref SubnetB
+          SecurityGroups:
+            - !Ref ContainerSecurityGroup
+      LoadBalancers:
+        - ContainerName: !Ref ServiceName
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref TargetGroup
+        
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Join ['', [!Ref ServiceName, TargetGroup]]
+      Port: !Ref ContainerPort
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: !Ref VPC
+  
+  ListenerHTTP:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - TargetGroupArn: !Ref TargetGroup
+          Type: forward
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: !Ref LoadBalancerPort
+      Protocol: HTTP
+      
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Ref Loadbalancer
+      # "internal" is also an option
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref LoadBalancerSecurityGroup
+      Subnets:
+        - !Ref SubnetA
+        - !Ref SubnetB    
+      
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Join ['', [/ecs/, !Ref ServiceName, TaskDefinition]] 
+  rPipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-PIPELINE-ROLE-${pEnv}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal: {Service: [codepipeline.amazonaws.com]}
+          Action: ['sts:AssumeRole']
+      Policies:
+      - PolicyName: !Sub '${AWS::StackName}-PIPELINE-POLICY-${pEnv}'
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - 'logs:CreateLogGroup'
+                - 'logs:CreateLogStream'
+                - 'logs:PutLogEvents'
+                - 'logs:DescribeLogStreams'
+              Resource: '*'
+            - Effect: Allow
+              Action:
+                - 'codebuild:BatchGetBuilds'
+              Resource: '*'
+            - Effect: Allow
+              Action:
+                - 'codebuild:StartBuild'
+              Resource:
+                - !GetAtt rBuildProject.Arn
+            - Effect: Allow
+              Action:
+                 - autoscaling:Describe*
+                 - autoscaling:UpdateAutoScalingGroup
+                 - cloudformation:CreateStack
+                 - cloudformation:DeleteStack
+                 - cloudformation:DescribeStack*
+                 - cloudformation:UpdateStack
+                 - cloudwatch:GetMetricStatistics
+                 - ec2:Describe*
+                 - elasticloadbalancing:*
+                 - ecs:*
+                 - events:DescribeRule
+                 - events:DeleteRule
+                 - events:ListRuleNamesByTarget
+                 - events:ListTargetsByRule
+                 - events:PutRule
+                 - events:PutTargets
+                 - events:RemoveTargets
+                 - iam:ListInstanceProfiles
+                 - iam:ListRoles
+                 - iam:PassRole
+              Resource: "*"    
+            - Effect: Allow
+              Action:
+                - 's3:PutObject'
+                - 's3:ListObjects'
+                - 's3:GetObject'
+                - 's3:ListBucket'
+              Resource:
+                - !GetAtt rPipelineBucket.Arn
+                - !Join
+                  - ''
+                  - - !GetAtt rPipelineBucket.Arn
+                    - '/*'
+              Resource: '*'
+
+  # AWS IAM Role to be used with the AWS CodeBuild Project defined above
+  # to interact with / perform desired functions (logging, s3, lambda update)
+  rBuildProjectRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-BUILDPROJECT-ROLE-${pEnv}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal: {Service: [codebuild.amazonaws.com]}
+          Action: ['sts:AssumeRole']
+      Policies:
+      - PolicyName: !Sub '${AWS::StackName}-BUILDPROJECT-POLICY-${pEnv}'
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - 'logs:CreateLogGroup'
+                - 'logs:CreateLogStream'
+                - 'logs:PutLogEvents'
+                - 'logs:DescribeLogStreams'
+              Resource: '*'
+            - Effect: Allow
+              Action:
+                 - 'ecr:*'  
+              Resource: '*'  
+            - Effect: Allow
+              Action:
+                - 's3:PutObject'
+                - 's3:ListObjects'
+                - 's3:GetObject'
+                - 's3:ListBucket'
+              Resource:
+                - !GetAtt rPipelineBucket.Arn
+                - !Join
+                  - ''
+                  - - !GetAtt rPipelineBucket.Arn
+                    - '/*'
+
+  # AWS S3 Bucket configuration (must be globally unique and not exist)
+  # This bucket will be used to hold the pipeline artifacts (source, build)
+  rPipelineBucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      # Bucket name is pulled from user-provided parameter
+      BucketName: !Ref pPipelineBucketName
+      # Tags populated with paramaters provided above
+      Tags:
+        - Key: CFNOwner
+          Value: !Ref pCFNOwnerTag
+        - Key: ENV
+          Value: !Ref pEnv
+        - Key: AppName
+          Value: !Ref pApplicationName
+
+  # AWS CodePipeline Configuration
+  rPipeline:
+    Type: "AWS::CodePipeline::Pipeline"
+    # Properties for the CodePipeline resource
+    Properties:
+      Name: !Sub '${AWS::StackName}-PIPELINE-${pEnv}'
+      RoleArn: !GetAtt rPipelineRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location:
+          Ref: rPipelineBucket
+      # Define the various Pipeline Stages and Actions
+      
+      Stages:
+      # Source Stage:  Watch GitHub, trigger pipeline on repo change
+        - Name: Source
+          Actions:
+            - Name: Source1
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Version: 1
+                Provider: GitHub
+              OutputArtifacts:
+                - Name: Source1
+              Configuration:
+                Owner: !Ref pGitHubAccount
+                Repo: !Ref pGitHubRepo
+                Branch: !Ref pGitHubRepoBranch
+                OAuthToken: !Ref pGitHubToken
+                PollForSourceChanges: 'true'
+              RunOrder: 1
+            
+      # Build Stage:  CodeBuild Action (see further below)  
+        - Name: BuildDeploy
+          Actions:
+            - Name: CodeBuild
+              InputArtifacts:
+                - Name: Source1
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              OutputArtifacts:
+                - Name: BuildOutput
+              Configuration:
+                ProjectName:
+                  Ref: rBuildProject
+              RunOrder: 1
+              
+        - Name: DeployIntoDev
+          Actions:
+            - Name: DeployECSContainer
+              RunOrder: 1
+              ActionTypeId:
+                  Category: Deploy
+                  Owner: AWS
+                  Provider: ECS
+                  Version: 1
+              InputArtifacts:
+                 - Name: Source1
+              Configuration:
+                 ClusterName: !Ref Cluster
+                 ServiceName: !Ref Service
+                 FileName: imagedefinitions.json          
+              
+  # AWS CodeBuild Project definition (language, build server, buildspec)
+  rBuildProject:
+    Type: "AWS::CodeBuild::Project"
+    Properties:
+      Name: !Sub '${AWS::StackName}-BUILDPROJECT-${pEnv}'
+      ServiceRole: !Ref rBuildProjectRole
+      BadgeEnabled: 'false'
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        PrivilegedMode: 'true'
+        # Specifying our build server container image
+        # TODO:  Parameterize this for 'selectable' pipeline
+        Image: aws/codebuild/standard:4.0
+      Source:
+        Type: CODEPIPELINE
+        
+        # Here's the BuildSpec that will be applied via CodeBuild
+        # TODO:  Externalize this to look for buildspec.yml in repo
+        BuildSpec: !Sub |
+           version: 0.2
+           phases:
+             install:
+               runtime-versions:
+                docker: 18
+               commands:
+                  - apt-get update
+                  - apt-get install maven -y 
+             pre_build:
+              commands:
+                - echo Logging in to Amazon ECR...
+                - $(aws ecr get-login --no-include-email --region us-west-2)
+             build:
+               commands:
+                  - echo Build started on `date`
+                  - mvn clean install -Dmaven.test.skip=true
+                  - echo Building the Docker image
+                  - docker build -t awsjava .
+                  - docker tag awsjava:latest 165421142945.dkr.ecr.us-west-2.amazonaws.com/awsjava:latest
+             post_build:
+              commands:
+                 - echo Build completed on `date`
+                 - echo Pushing the Docker image...
+                 - docker push 165421142945.dkr.ecr.us-west-2.amazonaws.com/awsjava:latest
+      TimeoutInMinutes: 10
+      Cache:
+        Type: NO_CACHE
+      # Tag all the things (from parameter values)
+      Tags:
+        - Key: CFNOwner
+          Value: !Ref pCFNOwnerTag
+        - Key: ENV
+          Value: !Ref pEnv
+        - Key: AppName
+          Value: !Ref pApplicationName
+          
+Outputs:
+  LoadBalancer:
+    Description: A reference to the Application Load Balancer
+    Value: !Ref LoadBalancer
+
+  LoadBalancerUrl:
+    Description: The URL of the ALB
+    Value: !GetAtt LoadBalancer.DNSName
+
+  Listener:
+    Description: A reference to a port 80 listener
+    Value: !Ref ListenerHTTP          
